@@ -26,3 +26,9 @@ java -cp classes:build/libs/pddl4j-4.0.0.jar fr.uga.pddl4j.montecarlo.MonteCarlo
 ```
 
 The planner was tested against HSP on benchmarks blocks, gripper, logistics and depots. However depots are computationally expensive hence they have been ommited.
+
+## 4. Additional documents.
+  * A pdf with perfomance results can be found in location src/comparisonScript/MCTS_Images.pdf
+  * A python sript to generate these plots can be found in location src/comparisonScript/script.py
+  
+
