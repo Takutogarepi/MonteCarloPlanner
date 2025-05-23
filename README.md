@@ -16,13 +16,13 @@ PDDL4J and start running a planner start reading the [Getting Started section](h
 Note that [PDDL4J API documentation](http://pddl4j.imag.fr/api_documentation.html) is also available online.
 
 to compile the code use
-'''
+```
 javac -d classes -cp build/libs/pddl4j-4.0.0.jar src/main/java/fr/uga/pddl4j/montecarlo/*.java
-'''
+```
 
 to run the code use 
-'''
+```
 java -cp classes:build/libs/pddl4j-4.0.0.jar fr.uga.pddl4j.montecarlo.MonteCarloTreeSearch
-'''
+```
 
 The planner was tested against HSP on benchmarks blocks, gripper, logistics and depots. However depots are computationally expensive hence they have been ommited.
