@@ -9,17 +9,15 @@ import fr.uga.pddl4j.planners.AbstractPlanner;
 import fr.uga.pddl4j.planners.Planner;
 import fr.uga.pddl4j.planners.PlannerConfiguration;
 import fr.uga.pddl4j.planners.ProblemNotSupportedException;
-//import fr.uga.pddl4j.planners.SearchStrategy;
-//import fr.uga.pddl4j.planners.statespace.search.StateSpaceSearch;
 import fr.uga.pddl4j.planners.statespace.HSP;
 import fr.uga.pddl4j.problem.DefaultProblem;
 import fr.uga.pddl4j.problem.Problem;
 import fr.uga.pddl4j.problem.State;
 import fr.uga.pddl4j.problem.operator.Action;
-//import fr.uga.pddl4j.problem.operator.ConditionalEffect;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-//import org.apache.logging.log4j.core.tools.picocli.CommandLine.Command;
+
 
 import picocli.CommandLine;
 
@@ -103,6 +101,8 @@ public class MonteCarloTreeSearch extends AbstractPlanner {
     /** restarts after 7 steps if no improvement is observed. */
     private static final int DEFAULT_MAX_STEPS = 7;
 
+    private static final int DEFAULT_MAX_WALKS = 100;
+
     /** c is the exploration constant for UCT.*/
     private double c;
 
@@ -141,6 +141,12 @@ public class MonteCarloTreeSearch extends AbstractPlanner {
     public final StateHeuristic.Name getHeuristic() {
         return this.heuristic;
     }
+
+    //This is for the MDA
+    private final Map<State, Set<Integer>> failedActions = new HashMap<>();
+
+    //This is for MHA
+    private final Map<State, List<Integer>> helpfulActions = new HashMap<>();
     
     /** 
      * This creates a planner using the default config. 
@@ -288,7 +294,8 @@ public class MonteCarloTreeSearch extends AbstractPlanner {
     }
     
     /**
-     * We solve the problem with MCTS which uses pure random walks as well.
+     * We solve the problem with MCTS which uses pure random walks as well. 
+     * Used the same method for the Pure random walks implementation and the enhanced one.
      * If we find a solution we return the plan.
      * 
      * @throws ProblemNotSupportedException when we have a problem which the planner does not support.
@@ -301,7 +308,7 @@ public class MonteCarloTreeSearch extends AbstractPlanner {
         final long end = System.currentTimeMillis();
 
         if(plan != null){
-            LOGGER.info("Successfully completed MCTS!" + plan.size() +" \n" );
+            LOGGER.info("Successfully completed MCTS! \n" );
             this.getStatistics().setTimeToSearch(end - begin);
         }
         else{
@@ -322,10 +329,18 @@ public class MonteCarloTreeSearch extends AbstractPlanner {
 
         double hMin = n.getHeuristic();
         int counter = 0;
+        int restarts = 0; //tracks the number of restarts
+        int maxRestarts = 10; //Return null if we exeed the restart limit.
         while(!n.satisfy(problem.getGoal())){
             if(counter >= DEFAULT_MAX_STEPS || getActions(problem,n).isEmpty()){
-                n = new Node(init, null, -1, 0, 0, heuristic.estimate(init, problem.getGoal()));
+                restarts++;
+                if(restarts>=maxRestarts){
+                    LOGGER.warn("Too many restars stopping search");
+                    return null;
+                }
+            n = new Node(init, null, -1, 0, 0, heuristic.estimate(init, problem.getGoal()));
             counter = 0;
+            continue;
             }
             n = pureRandomWalkAlgo(problem, n, heuristic);
             if(n.getHeuristic()< hMin){
@@ -392,6 +407,34 @@ public class MonteCarloTreeSearch extends AbstractPlanner {
     public Node pureRandomWalkAlgo(Problem p, Node s, StateHeuristic heuristic){
         double hMin = Double.MAX_VALUE;
         Node sMin = null;
+        int adaptiveWalks = 0;
+        double hBefore = s.getHeuristic();
+        double hAfter = hBefore;
+
+        while(adaptiveWalks < DEFAULT_MAX_WALKS){
+            Node sPrime = randomWalk(p,s,heuristic);
+            hAfter = sPrime.getHeuristic();
+
+            if(sPrime.satisfy(p.getGoal())){
+                return sPrime;
+            }
+            
+            if(hAfter < hMin){
+                hMin = hAfter;
+                sMin = sPrime;
+            }
+
+            if(hAfter < hBefore){
+                hBefore = hAfter;
+                adaptiveWalks = 0;
+            }
+            else{
+                adaptiveWalks++;
+            }
+        }
+        return sMin == null ? s : sMin;
+
+        /*/
         for(int i = 0; i < numberOfWalks; i++){
             Node sPrime = s;
             for(int j = 1; j < lengthOfWalk; j++){
@@ -409,7 +452,43 @@ public class MonteCarloTreeSearch extends AbstractPlanner {
                 sMin = sPrime;
             }
         }
-        return sMin == null ? s : sMin;
+        return sMin == null ? s : sMin;*/
+    }
+    private Node randomWalk(Problem p, Node start, StateHeuristic heuristic){
+        Node current = start;
+        double hMin = current.getHeuristic();
+        Node sMin = null;
+        int walkLength = 1;
+
+        while(walkLength <= this.lengthOfWalk){
+            final Node currentNode = current;
+            List<Action> actions = getHelpfulActions(p, current, heuristic);
+            actions.removeIf(a -> failedActions.getOrDefault(currentNode, Set.of()).contains(p.getActions().indexOf(a)));
+
+            if(actions.isEmpty()){
+                break;
+            }
+            
+            Action a = selectRandomAction(actions);
+            Node next = useAction(p, current, a, heuristic);
+
+            if(next.satisfy(p.getGoal())){
+                return next;
+            }
+            
+            if(next.getHeuristic() < hMin){
+                hMin = next.getHeuristic();
+                sMin = next;
+            }
+
+            if(getActions(p, next).isEmpty()){
+                failedActions.computeIfAbsent(currentNode, k -> new HashSet<>()).add(p.getActions().indexOf(a));
+            }
+
+            current = next;
+            walkLength++;
+        }
+        return sMin == null ? start : sMin;
     }
 
     private List<Action> getActions(Problem p,Node n){
@@ -421,6 +500,40 @@ public class MonteCarloTreeSearch extends AbstractPlanner {
             }
         }
         return applicableActions;
+    }
+
+    private List<Action> getHelpfulActions(Problem p, Node n, StateHeuristic heuristic){
+        if(helpfulActions.containsKey(n)){
+            List<Integer> i = helpfulActions.get(n);
+            List<Action> actions = new ArrayList<>();
+            
+            for(int j : i){
+                actions.add(p.getActions().get(j));
+            }
+            return actions;
+        }
+        List<Action> actions = getActions(p, n);
+        List<Action> helpful = new ArrayList<>();
+        List<Integer> helpfulIndices = new ArrayList<>();
+        double currentHeuristicValue = n.getHeuristic();
+
+        for(Action a : actions){
+            State s = new State(n);
+            s.apply(a.getConditionalEffects());
+            double h = heuristic.estimate(s,p.getGoal());
+
+            if(h < currentHeuristicValue){
+                helpful.add(a);
+                helpfulIndices.add(p.getActions().indexOf(a));
+            }
+        }
+        
+        if(helpful.isEmpty()){
+            return actions;
+        }
+
+        helpfulActions.put(n,helpfulIndices);
+        return helpful;
     }
 
     /**
@@ -464,7 +577,7 @@ public class MonteCarloTreeSearch extends AbstractPlanner {
             String domainPath = domain.getKey();
             String domainName = domain.getValue()[0];
             String taskPath = domain.getValue()[1];
-            //Path domainFilePath = Paths.get(domainPath).toAbsolutePath();
+            
 
             try(Stream<java.nio.file.Path> problems = Files.list(Paths.get(taskPath))){
                 problems.filter(p -> p.toString().endsWith(".pddl") && !p.getFileName().toString().equals("domain.pddl"))
@@ -492,8 +605,8 @@ public class MonteCarloTreeSearch extends AbstractPlanner {
                     });
             }
         }
-        Files.write(Paths.get("mcts_vs_hsp_comparison.csv"), csvFile.toString().getBytes());
-        LOGGER.info("Comparative evaluation complete. Results: mcts_vs_hsp_comparison.csv");
+        Files.write(Paths.get("enhanced_mcts_vs_hsp_comparison.csv"), csvFile.toString().getBytes());
+        LOGGER.info("Comparative evaluation complete. Results: enhanced_mcts_vs_hsp_comparison.csv");
     }
 
     private static String runPlanner(AbstractPlanner planner, String domainFile, String problemFile){
